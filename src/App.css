@@ -28,41 +28,11 @@
   border: 1px solid #3a3a50;
 }
 
-.status-loading { color: #888 }
-.status-ready   { color: #4ade80; border-color: #22543d }
+.status-loading   { color: #888 }
+.status-ready     { color: #4ade80; border-color: #22543d }
 .status-converting { color: #facc15; border-color: #713f12 }
-.status-done    { color: #60a5fa; border-color: #1e3a5f }
-.status-error   { color: #f87171; border-color: #7f1d1d }
-
-.tab-nav {
-  display: flex;
-  gap: 0;
-  border-bottom: 1px solid #2a2a3a;
-  background: #13131c;
-  padding: 0 28px;
-}
-
-.tab-nav .tab {
-  padding: 10px 20px;
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: #666;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
-  margin-bottom: -1px;
-}
-
-.tab-nav .tab:hover {
-  color: #a090c8;
-}
-
-.tab-nav .tab.active {
-  color: #c0b0ff;
-  border-bottom-color: #7c3aed;
-}
+.status-done      { color: #60a5fa; border-color: #1e3a5f }
+.status-error     { color: #f87171; border-color: #7f1d1d }
 
 .app-main {
   flex: 1;
@@ -88,6 +58,13 @@
   padding: 12px 16px;
   color: #f87171;
   font-size: 13px;
+}
+
+.progress-msg {
+  text-align: center;
+  color: #facc15;
+  font-size: 13px;
+  padding: 4px 0;
 }
 
 .convert-btn {

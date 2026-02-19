@@ -1,0 +1,60 @@
+.upload-with-sep {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sep-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 4px;
+  flex-wrap: wrap;
+}
+
+.sep-row-disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.sep-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #a090c8;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.sep-check input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: #7c3aed;
+  cursor: pointer;
+}
+
+.sep-selects {
+  display: flex;
+  gap: 8px;
+  padding: 0 4px;
+  flex-wrap: wrap;
+}
+
+.sep-model-mini {
+  flex: 1;
+  min-width: 0;
+  background: #1a1a2e;
+  border: 1px solid #3a3a50;
+  border-radius: 6px;
+  color: #c0b0ff;
+  font-size: 12px;
+  padding: 5px 8px;
+  cursor: pointer;
+  outline: none;
+}
+
+.sep-model-mini:focus {
+  border-color: #7c3aed;
+}

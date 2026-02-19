@@ -407,7 +407,7 @@ async def convert(
 # ─── Audio Separation ─────────────────────────────────────────────────────────
 
 # Models cache dir (separate from SVC model checkpoints)
-SEP_MODEL_DIR = os.path.join(os.path.dirname(__file__), '..', 'checkpoints', 'uvr5_models')
+SEP_MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'checkpoints', 'uvr5_models'))
 
 SEPARATION_MODELS = {
     "UVR-MDX-NET-Inst_HQ_3.onnx": "MDX-Net 人声分离 (快速)",
@@ -490,6 +490,7 @@ async def separate(
     model: str = Form("UVR-MDX-NET-Inst_HQ_3.onnx"),
     output_format: str = Form("wav"),
     postprocess: str = Form(""),  # "", "denoise", "deecho", "both"
+    single_stem: str = Form(""),  # e.g. "Vocals" to get only one stem
 ):
     tmp_dir = tempfile.mkdtemp()
     stems_dir = os.path.join(tmp_dir, "stems")
@@ -508,12 +509,15 @@ async def separate(
             loop = asyncio.get_event_loop()
 
             def run_separation():
-                separator = Separator(
+                sep_kwargs = dict(
                     log_level=30,
                     model_file_dir=SEP_MODEL_DIR,
                     output_dir=stems_dir,
                     output_format=output_format,
                 )
+                if single_stem:
+                    sep_kwargs["output_single_stem"] = single_stem
+                separator = Separator(**sep_kwargs)
                 separator.load_model(model_filename=model)
                 return separator.separate(audio_path)
 
