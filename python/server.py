@@ -404,6 +404,161 @@ async def convert(
         return StreamingResponse(error_stream(), media_type="text/event-stream")
 
 
+# ─── Audio Separation ─────────────────────────────────────────────────────────
+
+# Models cache dir (separate from SVC model checkpoints)
+SEP_MODEL_DIR = os.path.join(os.path.dirname(__file__), '..', 'checkpoints', 'uvr5_models')
+
+SEPARATION_MODELS = {
+    "UVR-MDX-NET-Inst_HQ_3.onnx": "MDX-Net 人声分离 (快速)",
+    "model_bs_roformer_ep_368_sdr_12.9628.ckpt": "BS-Roformer 人声分离 (高质量)",
+    "htdemucs_ft.yaml": "Demucs 4-轨分离 (人声/鼓/贝斯/其他)",
+}
+
+# Post-process models applied to the vocals stem after primary separation
+POSTPROCESS_MODELS = {
+    "denoise": "UVR-DeNoise.pth",
+    "deecho":  "UVR-De-Echo-Aggressive.pth",
+}
+
+# Keywords that identify the *residual* (noise/echo) stem from post-processors
+_RESIDUAL_KEYWORDS = {"noise", "echo", "reverb", "other"}
+
+
+def _stem_display_name(filename: str) -> str:
+    name = os.path.splitext(os.path.basename(filename))[0]
+    if "_(" in name:
+        return name.rsplit("_(", 1)[-1].rstrip(")")
+    parts = name.rsplit("_", 1)
+    return parts[-1] if len(parts) > 1 else name
+
+
+def _pick_clean_stem(files: list[str]) -> str:
+    """From post-processor output files, pick the clean (non-residual) stem."""
+    for f in files:
+        name_lower = os.path.basename(f).lower()
+        if not any(kw in name_lower for kw in _RESIDUAL_KEYWORDS):
+            return f
+    # fallback: largest file is usually the clean signal
+    return max(files, key=lambda f: os.path.getsize(f))
+
+
+def _resolve_paths(files: list[str], output_dir: str) -> list[str]:
+    """Resolve separator output paths (may be relative) to absolute paths."""
+    return [f if os.path.isabs(f) else os.path.join(output_dir, os.path.basename(f)) for f in files]
+
+
+def _run_postprocess(vocals_path: str, pp_type: str, pp_dir: str, output_format: str) -> str:
+    """
+    Apply denoise / de-echo (or both) to a vocals file.
+    Returns the absolute path of the cleaned vocals file.
+    """
+    from audio_separator.separator import Separator
+
+    current = vocals_path  # already an absolute path
+    steps = []
+    if pp_type in ("denoise", "both"):
+        steps.append("denoise")
+    if pp_type in ("deecho", "both"):
+        steps.append("deecho")
+
+    for step in steps:
+        step_dir = os.path.join(pp_dir, step)
+        os.makedirs(step_dir, exist_ok=True)
+        sep = Separator(
+            log_level=30,
+            model_file_dir=SEP_MODEL_DIR,
+            output_dir=step_dir,
+            output_format=output_format,
+        )
+        sep.load_model(model_filename=POSTPROCESS_MODELS[step])
+        out_files = sep.separate(current)
+        resolved = _resolve_paths(out_files, step_dir)
+        current = _pick_clean_stem(resolved)
+
+    return current
+
+
+@app.get("/separation_models")
+def separation_models():
+    return {"models": [{"value": k, "label": v} for k, v in SEPARATION_MODELS.items()]}
+
+
+@app.post("/separate")
+async def separate(
+    audio_file: UploadFile = File(...),
+    model: str = Form("UVR-MDX-NET-Inst_HQ_3.onnx"),
+    output_format: str = Form("wav"),
+    postprocess: str = Form(""),  # "", "denoise", "deecho", "both"
+):
+    tmp_dir = tempfile.mkdtemp()
+    stems_dir = os.path.join(tmp_dir, "stems")
+    os.makedirs(stems_dir, exist_ok=True)
+    os.makedirs(SEP_MODEL_DIR, exist_ok=True)
+
+    audio_ext = os.path.splitext(audio_file.filename)[1] or ".wav"
+    audio_path = os.path.join(tmp_dir, f"input{audio_ext}")
+
+    with open(audio_path, "wb") as f:
+        f.write(await audio_file.read())
+
+    async def stream():
+        try:
+            from audio_separator.separator import Separator
+            loop = asyncio.get_event_loop()
+
+            def run_separation():
+                separator = Separator(
+                    log_level=30,
+                    model_file_dir=SEP_MODEL_DIR,
+                    output_dir=stems_dir,
+                    output_format=output_format,
+                )
+                separator.load_model(model_filename=model)
+                return separator.separate(audio_path)
+
+            output_files = await loop.run_in_executor(None, run_separation)
+
+            # Resolve to absolute paths immediately (separator may return relative paths)
+            output_files = _resolve_paths(output_files, stems_dir)
+
+            # Identify vocals file for optional post-processing
+            vocals_file = None
+            other_files = []
+            for fpath in output_files:
+                if "vocal" in os.path.basename(fpath).lower():
+                    vocals_file = fpath
+                else:
+                    other_files.append(fpath)
+
+            if postprocess and vocals_file:
+                pp_label = {"denoise": "去噪", "deecho": "去混响", "both": "去噪 + 去混响"}.get(postprocess, "后处理")
+                yield f"data: {json.dumps({'type': 'progress', 'message': f'正在对人声进行{pp_label}…（首次运行将自动下载后处理模型）'})}\n\n"
+                pp_dir = os.path.join(tmp_dir, "pp")
+                vocals_file = await loop.run_in_executor(
+                    None, _run_postprocess, vocals_file, postprocess, pp_dir, output_format
+                )
+                final_files = other_files + [vocals_file]
+            else:
+                final_files = output_files
+
+            for fpath in final_files:
+                stem_name = _stem_display_name(fpath)
+                fname = os.path.basename(fpath)
+                with open(fpath, "rb") as sf_:
+                    audio_b64 = base64.b64encode(sf_.read()).decode()
+                yield f"data: {json.dumps({'type': 'stem', 'name': stem_name, 'filename': fname, 'audio': audio_b64})}\n\n"
+
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
