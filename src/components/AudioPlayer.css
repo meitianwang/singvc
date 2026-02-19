@@ -1,0 +1,60 @@
+.player-panel {
+  background: #13131c;
+  border: 1px solid #2a2a3a;
+  border-radius: 12px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.player-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #a0a0c0;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.chunk-progress {
+  font-size: 12px;
+  color: #666;
+}
+
+.converting-dot {
+  color: #facc15;
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1 }
+  50% { opacity: 0.3 }
+}
+
+.audio-element {
+  width: 100%;
+  accent-color: #7c3aed;
+}
+
+.download-btn {
+  align-self: flex-start;
+  padding: 8px 24px;
+  border-radius: 6px;
+  border: 1px solid #3a3a50;
+  background: #1e1e2e;
+  color: #c0b0ff;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.download-btn:hover {
+  background: #2a2040;
+}
+
+.player-waiting {
+  font-size: 12px;
+  color: #444;
+  text-align: center;
+  padding: 12px 0;
+}

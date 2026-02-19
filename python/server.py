@@ -1,0 +1,431 @@
+import os
+import sys
+import base64
+import json
+import tempfile
+import shutil
+import argparse
+import asyncio
+
+os.environ['HF_HUB_CACHE'] = os.path.join(os.path.dirname(__file__), '..', 'checkpoints', 'hf_cache')
+
+# Add project root to path so modules can be found
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import torch
+import numpy as np
+import soundfile as sf
+from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+import uvicorn
+
+# ─── Global state ────────────────────────────────────────────────────────────
+
+device = None
+fp16 = True
+sr = None
+hop_length = None
+overlap_frame_len = 16
+overlap_wave_len = None
+max_context_window = None
+
+model_f0 = None
+semantic_fn = None
+vocoder_fn = None
+campplus_model = None
+to_mel_f0 = None
+mel_fn_args = None
+f0_fn = None
+
+model_loaded = False
+model_error = None
+
+# ─── Inference helpers (from app_svc.py, unchanged) ──────────────────────────
+
+def adjust_f0_semitones(f0_sequence, n_semitones):
+    factor = 2 ** (n_semitones / 12)
+    return f0_sequence * factor
+
+
+def crossfade(chunk1, chunk2, overlap):
+    fade_out = np.cos(np.linspace(0, np.pi / 2, overlap)) ** 2
+    fade_in = np.cos(np.linspace(np.pi / 2, 0, overlap)) ** 2
+    chunk2[:overlap] = chunk2[:overlap] * fade_in + chunk1[-overlap:] * fade_out
+    return chunk2
+
+
+@torch.no_grad()
+@torch.inference_mode()
+def voice_conversion(source, target, diffusion_steps, length_adjust,
+                     inference_cfg_rate, auto_f0_adjust, pitch_shift):
+    import torchaudio
+    import librosa
+    from pydub import AudioSegment
+
+    bitrate = "320k"
+    inference_module = model_f0
+    mel_fn = to_mel_f0
+
+    source_audio = librosa.load(source, sr=sr)[0]
+    ref_audio = librosa.load(target, sr=sr)[0]
+
+    source_audio = torch.tensor(source_audio).unsqueeze(0).float().to(device)
+    ref_audio = torch.tensor(ref_audio[:sr * 25]).unsqueeze(0).float().to(device)
+
+    ref_waves_16k = torchaudio.functional.resample(ref_audio, sr, 16000)
+    converted_waves_16k = torchaudio.functional.resample(source_audio, sr, 16000)
+
+    if converted_waves_16k.size(-1) <= 16000 * 30:
+        S_alt = semantic_fn(converted_waves_16k)
+    else:
+        overlapping_time = 5
+        S_alt_list = []
+        buffer = None
+        traversed_time = 0
+        while traversed_time < converted_waves_16k.size(-1):
+            if buffer is None:
+                chunk = converted_waves_16k[:, traversed_time:traversed_time + 16000 * 30]
+            else:
+                chunk = torch.cat([buffer, converted_waves_16k[:, traversed_time:traversed_time + 16000 * (30 - overlapping_time)]], dim=-1)
+            S_alt = semantic_fn(chunk)
+            if traversed_time == 0:
+                S_alt_list.append(S_alt)
+            else:
+                S_alt_list.append(S_alt[:, 50 * overlapping_time:])
+            buffer = chunk[:, -16000 * overlapping_time:]
+            traversed_time += 30 * 16000 if traversed_time == 0 else chunk.size(-1) - 16000 * overlapping_time
+        S_alt = torch.cat(S_alt_list, dim=1)
+
+    ori_waves_16k = torchaudio.functional.resample(ref_audio, sr, 16000)
+    S_ori = semantic_fn(ori_waves_16k)
+
+    mel = mel_fn(source_audio.to(device).float())
+    mel2 = mel_fn(ref_audio.to(device).float())
+
+    target_lengths = torch.LongTensor([int(mel.size(2) * length_adjust)]).to(mel.device)
+    target2_lengths = torch.LongTensor([mel2.size(2)]).to(mel2.device)
+
+    feat2 = torchaudio.compliance.kaldi.fbank(ref_waves_16k, num_mel_bins=80,
+                                               dither=0, sample_frequency=16000)
+    feat2 = feat2 - feat2.mean(dim=0, keepdim=True)
+    style2 = campplus_model(feat2.unsqueeze(0))
+
+    F0_ori = f0_fn(ref_waves_16k[0], thred=0.03)
+    F0_alt = f0_fn(converted_waves_16k[0], thred=0.03)
+
+    if device.type == "mps":
+        F0_ori = torch.from_numpy(F0_ori).float().to(device)[None]
+        F0_alt = torch.from_numpy(F0_alt).float().to(device)[None]
+    else:
+        F0_ori = torch.from_numpy(F0_ori).to(device)[None]
+        F0_alt = torch.from_numpy(F0_alt).to(device)[None]
+
+    voiced_F0_ori = F0_ori[F0_ori > 1]
+    voiced_F0_alt = F0_alt[F0_alt > 1]
+
+    log_f0_alt = torch.log(F0_alt + 1e-5)
+    voiced_log_f0_ori = torch.log(voiced_F0_ori + 1e-5)
+    voiced_log_f0_alt = torch.log(voiced_F0_alt + 1e-5)
+    median_log_f0_ori = torch.median(voiced_log_f0_ori)
+    median_log_f0_alt = torch.median(voiced_log_f0_alt)
+
+    shifted_log_f0_alt = log_f0_alt.clone()
+    if auto_f0_adjust:
+        shifted_log_f0_alt[F0_alt > 1] = log_f0_alt[F0_alt > 1] - median_log_f0_alt + median_log_f0_ori
+    shifted_f0_alt = torch.exp(shifted_log_f0_alt)
+    if pitch_shift != 0:
+        shifted_f0_alt[F0_alt > 1] = adjust_f0_semitones(shifted_f0_alt[F0_alt > 1], pitch_shift)
+
+    cond, _, codes, commitment_loss, codebook_loss = inference_module.length_regulator(
+        S_alt, ylens=target_lengths, n_quantizers=3, f0=shifted_f0_alt)
+    prompt_condition, _, codes, commitment_loss, codebook_loss = inference_module.length_regulator(
+        S_ori, ylens=target2_lengths, n_quantizers=3, f0=F0_ori)
+    interpolated_shifted_f0_alt = torch.nn.functional.interpolate(
+        shifted_f0_alt.unsqueeze(1), size=cond.size(1), mode='nearest').squeeze(1)
+
+    max_source_window = max_context_window - mel2.size(2)
+    processed_frames = 0
+    generated_wave_chunks = []
+    previous_chunk = None
+
+    while processed_frames < cond.size(1):
+        chunk_cond = cond[:, processed_frames:processed_frames + max_source_window]
+        chunk_f0 = interpolated_shifted_f0_alt[:, processed_frames:processed_frames + max_source_window]
+        is_last_chunk = processed_frames + max_source_window >= cond.size(1)
+        cat_condition = torch.cat([prompt_condition, chunk_cond], dim=1)
+        with torch.autocast(device_type=device.type, dtype=torch.float16 if fp16 else torch.float32):
+            vc_target = inference_module.cfm.inference(
+                cat_condition,
+                torch.LongTensor([cat_condition.size(1)]).to(mel2.device),
+                mel2, style2, None, diffusion_steps,
+                inference_cfg_rate=inference_cfg_rate)
+            vc_target = vc_target[:, :, mel2.size(-1):]
+        vc_wave = vocoder_fn(vc_target.float()).squeeze().cpu()
+        if vc_wave.ndim == 1:
+            vc_wave = vc_wave.unsqueeze(0)
+
+        if processed_frames == 0:
+            if is_last_chunk:
+                output_wave = vc_wave[0].cpu().numpy()
+                generated_wave_chunks.append(output_wave)
+                output_wave_int16 = (output_wave * 32768.0).astype(np.int16)
+                mp3_bytes = AudioSegment(
+                    output_wave_int16.tobytes(), frame_rate=sr,
+                    sample_width=output_wave_int16.dtype.itemsize, channels=1
+                ).export(format="mp3", bitrate=bitrate).read()
+                yield mp3_bytes, (sr, np.concatenate(generated_wave_chunks))
+                break
+            output_wave = vc_wave[0, :-overlap_wave_len].cpu().numpy()
+            generated_wave_chunks.append(output_wave)
+            previous_chunk = vc_wave[0, -overlap_wave_len:]
+            processed_frames += vc_target.size(2) - overlap_frame_len
+            output_wave_int16 = (output_wave * 32768.0).astype(np.int16)
+            mp3_bytes = AudioSegment(
+                output_wave_int16.tobytes(), frame_rate=sr,
+                sample_width=output_wave_int16.dtype.itemsize, channels=1
+            ).export(format="mp3", bitrate=bitrate).read()
+            yield mp3_bytes, None
+        elif is_last_chunk:
+            output_wave = crossfade(previous_chunk.cpu().numpy(), vc_wave[0].cpu().numpy(), overlap_wave_len)
+            generated_wave_chunks.append(output_wave)
+            processed_frames += vc_target.size(2) - overlap_frame_len
+            output_wave_int16 = (output_wave * 32768.0).astype(np.int16)
+            mp3_bytes = AudioSegment(
+                output_wave_int16.tobytes(), frame_rate=sr,
+                sample_width=output_wave_int16.dtype.itemsize, channels=1
+            ).export(format="mp3", bitrate=bitrate).read()
+            yield mp3_bytes, (sr, np.concatenate(generated_wave_chunks))
+            break
+        else:
+            output_wave = crossfade(previous_chunk.cpu().numpy(), vc_wave[0, :-overlap_wave_len].cpu().numpy(), overlap_wave_len)
+            generated_wave_chunks.append(output_wave)
+            previous_chunk = vc_wave[0, -overlap_wave_len:]
+            processed_frames += vc_target.size(2) - overlap_frame_len
+            output_wave_int16 = (output_wave * 32768.0).astype(np.int16)
+            mp3_bytes = AudioSegment(
+                output_wave_int16.tobytes(), frame_rate=sr,
+                sample_width=output_wave_int16.dtype.itemsize, channels=1
+            ).export(format="mp3", bitrate=bitrate).read()
+            yield mp3_bytes, None
+
+
+# ─── Model loading ────────────────────────────────────────────────────────────
+
+def load_models(checkpoint=None, config=None):
+    global model_f0, semantic_fn, vocoder_fn, campplus_model, to_mel_f0
+    global mel_fn_args, f0_fn, sr, hop_length, overlap_wave_len, max_context_window
+    global model_loaded, model_error
+
+    try:
+        import yaml
+        from modules.commons import build_model, load_checkpoint, recursive_munch
+        from hf_utils import load_custom_model_from_hf
+
+        if checkpoint is None or checkpoint == "":
+            dit_checkpoint_path, dit_config_path = load_custom_model_from_hf(
+                "Plachta/Seed-VC",
+                "DiT_seed_v2_uvit_whisper_base_f0_44k_bigvgan_pruned_ft_ema_v2.pth",
+                "config_dit_mel_seed_uvit_whisper_base_f0_44k.yml")
+        else:
+            dit_checkpoint_path = checkpoint
+            dit_config_path = config
+
+        config_data = yaml.safe_load(open(dit_config_path, "r"))
+        model_params = recursive_munch(config_data["model_params"])
+        model_params.dit_type = 'DiT'
+        model = build_model(model_params, stage="DiT")
+        hop_length = config_data["preprocess_params"]["spect_params"]["hop_length"]
+        sr = config_data["preprocess_params"]["sr"]
+
+        model, _, _, _ = load_checkpoint(model, None, dit_checkpoint_path,
+                                         load_only_params=True, ignore_modules=[], is_distributed=False)
+        for key in model:
+            model[key].eval()
+            model[key].to(device)
+        model.cfm.estimator.setup_caches(max_batch_size=1, max_seq_length=8192)
+
+        from modules.campplus.DTDNN import CAMPPlus
+        campplus_ckpt_path = load_custom_model_from_hf("funasr/campplus", "campplus_cn_common.bin", config_filename=None)
+        campplus_model = CAMPPlus(feat_dim=80, embedding_size=192)
+        campplus_model.load_state_dict(torch.load(campplus_ckpt_path, map_location="cpu"))
+        campplus_model.eval()
+        campplus_model.to(device)
+
+        vocoder_type = model_params.vocoder.type
+        if vocoder_type == 'bigvgan':
+            from modules.bigvgan import bigvgan
+            bigvgan_model = bigvgan.BigVGAN.from_pretrained(model_params.vocoder.name, use_cuda_kernel=False)
+            bigvgan_model.remove_weight_norm()
+            vocoder_fn = bigvgan_model.eval().to(device)
+        elif vocoder_type == 'hifigan':
+            from modules.hifigan.generator import HiFTGenerator
+            from modules.hifigan.f0_predictor import ConvRNNF0Predictor
+            hift_config = yaml.safe_load(open('configs/hifigan.yml', 'r'))
+            hift_gen = HiFTGenerator(**hift_config['hift'], f0_predictor=ConvRNNF0Predictor(**hift_config['f0_predictor']))
+            hift_path = load_custom_model_from_hf("FunAudioLLM/CosyVoice-300M", 'hift.pt', None)
+            hift_gen.load_state_dict(torch.load(hift_path, map_location='cpu'))
+            vocoder_fn = hift_gen.eval().to(device)
+        else:
+            raise ValueError(f"Unknown vocoder type: {vocoder_type}")
+
+        from transformers import AutoFeatureExtractor, WhisperModel
+        whisper_name = model_params.speech_tokenizer.name
+        whisper_model = WhisperModel.from_pretrained(whisper_name, torch_dtype=torch.float16, use_safetensors=False).to(device)
+        del whisper_model.decoder
+        whisper_feature_extractor = AutoFeatureExtractor.from_pretrained(whisper_name)
+
+        def semantic_fn_inner(waves_16k):
+            ori_inputs = whisper_feature_extractor([waves_16k.squeeze(0).cpu().numpy()],
+                                                    return_tensors="pt", return_attention_mask=True)
+            ori_input_features = whisper_model._mask_input_features(
+                ori_inputs.input_features, attention_mask=ori_inputs.attention_mask).to(device)
+            with torch.no_grad():
+                ori_outputs = whisper_model.encoder(
+                    ori_input_features.to(whisper_model.encoder.dtype),
+                    head_mask=None, output_attentions=False,
+                    output_hidden_states=False, return_dict=True)
+            S_ori = ori_outputs.last_hidden_state.to(torch.float32)
+            S_ori = S_ori[:, :waves_16k.size(-1) // 320 + 1]
+            return S_ori
+
+        semantic_fn = semantic_fn_inner
+
+        mel_fn_args = {
+            "n_fft": config_data['preprocess_params']['spect_params']['n_fft'],
+            "win_size": config_data['preprocess_params']['spect_params']['win_length'],
+            "hop_size": config_data['preprocess_params']['spect_params']['hop_length'],
+            "num_mels": config_data['preprocess_params']['spect_params']['n_mels'],
+            "sampling_rate": sr,
+            "fmin": config_data['preprocess_params']['spect_params'].get('fmin', 0),
+            "fmax": None if config_data['preprocess_params']['spect_params'].get('fmax', "None") == "None" else 8000,
+            "center": False
+        }
+        from modules.audio import mel_spectrogram
+        to_mel_f0 = lambda x: mel_spectrogram(x, **mel_fn_args)
+
+        from modules.rmvpe import RMVPE
+        model_path = load_custom_model_from_hf("lj1995/VoiceConversionWebUI", "rmvpe.pt", None)
+        rmvpe = RMVPE(model_path, is_half=False, device=device)
+        f0_fn = rmvpe.infer_from_audio
+
+        model_f0 = model
+        max_context_window = sr // hop_length * 30
+        overlap_wave_len = overlap_frame_len * hop_length
+        model_loaded = True
+        print(f"Models loaded successfully. device={device}, sr={sr}")
+    except Exception as e:
+        model_error = str(e)
+        print(f"Failed to load models: {e}")
+        raise
+
+
+# ─── FastAPI app ──────────────────────────────────────────────────────────────
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/status")
+def status():
+    return {
+        "loaded": model_loaded,
+        "error": model_error,
+        "device": str(device) if device else None,
+        "sr": sr,
+        "fp16": fp16,
+    }
+
+
+@app.post("/convert")
+async def convert(
+    source_file: UploadFile = File(...),
+    target_file: UploadFile = File(...),
+    diffusion_steps: int = Form(10),
+    length_adjust: float = Form(1.0),
+    inference_cfg_rate: float = Form(0.7),
+    auto_f0_adjust: bool = Form(True),
+    pitch_shift: int = Form(0),
+):
+    if not model_loaded:
+        async def error_stream():
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Models not loaded yet'})}\n\n"
+        return StreamingResponse(error_stream(), media_type="text/event-stream")
+
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        source_ext = os.path.splitext(source_file.filename)[1] or ".wav"
+        target_ext = os.path.splitext(target_file.filename)[1] or ".wav"
+        source_path = os.path.join(tmp_dir, f"source{source_ext}")
+        target_path = os.path.join(tmp_dir, f"target{target_ext}")
+
+        with open(source_path, "wb") as f:
+            f.write(await source_file.read())
+        with open(target_path, "wb") as f:
+            f.write(await target_file.read())
+
+        async def stream():
+            try:
+                loop = asyncio.get_event_loop()
+                gen = voice_conversion(
+                    source_path, target_path,
+                    diffusion_steps, length_adjust, inference_cfg_rate,
+                    auto_f0_adjust, pitch_shift
+                )
+                for mp3_bytes, final in await loop.run_in_executor(None, lambda: list(gen)):
+                    audio_b64 = base64.b64encode(mp3_bytes).decode()
+                    if final is not None:
+                        sample_rate, waveform = final
+                        wav_path = os.path.join(tmp_dir, "output.wav")
+                        sf.write(wav_path, waveform, sample_rate)
+                        with open(wav_path, "rb") as wf:
+                            wav_b64 = base64.b64encode(wf.read()).decode()
+                        yield f"data: {json.dumps({'type': 'chunk', 'audio': audio_b64})}\n\n"
+                        yield f"data: {json.dumps({'type': 'done', 'audio': wav_b64})}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'type': 'chunk', 'audio': audio_b64})}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        return StreamingResponse(stream(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    except Exception as e:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        async def error_stream():
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        return StreamingResponse(error_stream(), media_type="text/event-stream")
+
+
+# ─── Entry point ──────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=18888)
+    parser.add_argument("--checkpoint", type=str, default=None)
+    parser.add_argument("--config", type=str, default=None)
+    parser.add_argument("--fp16", type=lambda x: x.lower() != 'false', default=True)
+    parser.add_argument("--gpu", type=int, default=0)
+    args = parser.parse_args()
+
+    fp16 = args.fp16
+    cuda_target = f"cuda:{args.gpu}" if args.gpu else "cuda"
+    if torch.cuda.is_available():
+        device = torch.device(cuda_target)
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+
+    # Load models in background so /status can be polled immediately
+    import threading
+    threading.Thread(target=load_models, args=(args.checkpoint, args.config), daemon=True).start()
+
+    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="info")

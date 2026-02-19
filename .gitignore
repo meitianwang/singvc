@@ -16,6 +16,11 @@ __pycache__/
 .idea/
 .claude/
 
+# runtime
+.python_server.pid
+node_modules/
+dist/
+
 # misc
 checkpoints/
 test_waves/

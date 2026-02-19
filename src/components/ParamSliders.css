@@ -1,0 +1,79 @@
+.params-panel {
+  background: #13131c;
+  border: 1px solid #2a2a3a;
+  border-radius: 12px;
+  padding: 20px;
+}
+
+.params-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #a0a0c0;
+  margin-bottom: 16px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.params-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px 28px;
+}
+
+.slider-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.slider-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.slider-label {
+  font-size: 13px;
+  color: #c0c0d8;
+}
+
+.slider-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: #c0b0ff;
+  min-width: 32px;
+  text-align: right;
+}
+
+.slider-hint {
+  font-size: 11px;
+  color: #555;
+  line-height: 1.4;
+}
+
+input[type="range"] {
+  width: 100%;
+  accent-color: #7c3aed;
+  cursor: pointer;
+  height: 4px;
+}
+
+.checkbox-row {
+  justify-content: center;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #c0c0d8;
+  cursor: pointer;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #7c3aed;
+  cursor: pointer;
+}
