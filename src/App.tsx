@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import AudioUpload from "./components/AudioUpload";
 import ParamSliders from "./components/ParamSliders";
 import AudioPlayer from "./components/AudioPlayer";
+import SeparationPage from "./pages/SeparationPage";
 import "./App.css";
 
 export interface Params {
@@ -14,10 +15,14 @@ export interface Params {
 }
 
 type Status = "loading" | "ready" | "converting" | "done" | "error";
+type Tab = "vc" | "sep";
 
 export default function App() {
   const [serverPort, setServerPort] = useState<number>(18888);
   const [serverReady, setServerReady] = useState(false);
+  const [activeTab, setActiveTab] = useState<Tab>("vc");
+
+  // Voice conversion state
   const [sourceFile, setSourceFile] = useState<File | null>(null);
   const [targetFile, setTargetFile] = useState<File | null>(null);
   const [params, setParams] = useState<Params>({
@@ -130,28 +135,47 @@ export default function App() {
         </div>
       </header>
 
-      <main className="app-main">
-        <div className="upload-row">
-          <AudioUpload label="源音频（待转换）" file={sourceFile} onFile={setSourceFile} />
-          <AudioUpload label="参考音频（目标音色）" file={targetFile} onFile={setTargetFile} />
-        </div>
-
-        <ParamSliders params={params} onChange={setParams} />
-
-        {errorMsg && <div className="error-box">{errorMsg}</div>}
-
+      <nav className="tab-nav">
         <button
-          className="convert-btn"
-          onClick={handleConvert}
-          disabled={!canConvert}
+          className={`tab${activeTab === "vc" ? " active" : ""}`}
+          onClick={() => setActiveTab("vc")}
         >
-          {status === "converting" ? "转换中…" : "开始转换"}
+          歌声转换
         </button>
+        <button
+          className={`tab${activeTab === "sep" ? " active" : ""}`}
+          onClick={() => setActiveTab("sep")}
+        >
+          音频分离
+        </button>
+      </nav>
 
-        {(mp3Chunks.length > 0 || finalWav) && (
-          <AudioPlayer mp3Chunks={mp3Chunks} finalWav={finalWav} />
-        )}
-      </main>
+      {activeTab === "vc" ? (
+        <main className="app-main">
+          <div className="upload-row">
+            <AudioUpload label="源音频（待转换）" file={sourceFile} onFile={setSourceFile} />
+            <AudioUpload label="参考音频（目标音色）" file={targetFile} onFile={setTargetFile} />
+          </div>
+
+          <ParamSliders params={params} onChange={setParams} />
+
+          {errorMsg && <div className="error-box">{errorMsg}</div>}
+
+          <button
+            className="convert-btn"
+            onClick={handleConvert}
+            disabled={!canConvert}
+          >
+            {status === "converting" ? "转换中…" : "开始转换"}
+          </button>
+
+          {(mp3Chunks.length > 0 || finalWav) && (
+            <AudioPlayer mp3Chunks={mp3Chunks} finalWav={finalWav} />
+          )}
+        </main>
+      ) : (
+        <SeparationPage serverPort={serverPort} />
+      )}
     </div>
   );
 }
