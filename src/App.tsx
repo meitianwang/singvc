@@ -15,10 +15,10 @@ export interface Params {
 
 type Status = "loading" | "ready" | "converting" | "done" | "error";
 
-/** Call /separate with single_stem=Vocals, return the extracted vocals as a File. */
+/** Call /separate with single_stem=Vocals, return the extracted vocals as a File + base64 audio. */
 async function extractVocals(
   file: File, model: string, postprocess: string, port: number
-): Promise<File> {
+): Promise<{ file: File; audioB64: string }> {
   const formData = new FormData();
   formData.append("audio_file", file);
   formData.append("model", model);
@@ -57,7 +57,10 @@ async function extractVocals(
 
   if (!vocalsB64) throw new Error("人声提取失败：未收到音频数据");
   const bytes = Uint8Array.from(atob(vocalsB64), (c) => c.charCodeAt(0));
-  return new File([bytes], vocalsFilename, { type: "audio/wav" });
+  return {
+    file: new File([bytes], vocalsFilename, { type: "audio/wav" }),
+    audioB64: vocalsB64,
+  };
 }
 
 export default function App() {
@@ -75,6 +78,10 @@ export default function App() {
   const [targetSepEnabled, setTargetSepEnabled] = useState(false);
   const [targetSepModel, setTargetSepModel] = useState("UVR-MDX-NET-Inst_HQ_3.onnx");
   const [targetSepPP, setTargetSepPP] = useState("");
+
+  // Intermediate separation results (base64 WAV)
+  const [sourceVocalsB64, setSourceVocalsB64] = useState<string | null>(null);
+  const [targetVocalsB64, setTargetVocalsB64] = useState<string | null>(null);
 
   // Conversion params
   const [params, setParams] = useState<Params>({
@@ -127,18 +134,24 @@ export default function App() {
     setMp3Chunks([]);
     setFinalWav(null);
     setErrorMsg("");
+    setSourceVocalsB64(null);
+    setTargetVocalsB64(null);
 
     try {
       let actualSource = sourceFile;
       let actualTarget = targetFile;
 
       if (sourceSepEnabled) {
-        setProgressMsg("正在提取源音频人声…（首次运行将自动下载分离模型）");
-        actualSource = await extractVocals(sourceFile, sourceSepModel, sourceSepPP, serverPort);
+        setProgressMsg("正在提取源音频人声…");
+        const result = await extractVocals(sourceFile, sourceSepModel, sourceSepPP, serverPort);
+        actualSource = result.file;
+        setSourceVocalsB64(result.audioB64);
       }
       if (targetSepEnabled) {
         setProgressMsg("正在提取参考音频人声…");
-        actualTarget = await extractVocals(targetFile, targetSepModel, targetSepPP, serverPort);
+        const result = await extractVocals(targetFile, targetSepModel, targetSepPP, serverPort);
+        actualTarget = result.file;
+        setTargetVocalsB64(result.audioB64);
       }
 
       setProgressMsg("语音转换中…");
@@ -192,6 +205,7 @@ export default function App() {
 
   const busy = status === "converting";
   const canConvert = serverReady && sourceFile && targetFile && !busy;
+  const showIntermediates = sourceVocalsB64 || targetVocalsB64;
 
   return (
     <div className="app">
@@ -245,6 +259,34 @@ export default function App() {
         <button className="convert-btn" onClick={handleConvert} disabled={!canConvert}>
           {busy ? "处理中…" : "开始转换"}
         </button>
+
+        {showIntermediates && (
+          <div className="intermediates">
+            <div className="intermediates-title">分离结果预览</div>
+            <div className="intermediates-grid">
+              {sourceVocalsB64 && (
+                <div className="intermediate-card">
+                  <div className="intermediate-label">源音频 — 提取人声</div>
+                  <audio
+                    controls
+                    className="intermediate-audio"
+                    src={`data:audio/wav;base64,${sourceVocalsB64}`}
+                  />
+                </div>
+              )}
+              {targetVocalsB64 && (
+                <div className="intermediate-card">
+                  <div className="intermediate-label">参考音频 — 提取人声</div>
+                  <audio
+                    controls
+                    className="intermediate-audio"
+                    src={`data:audio/wav;base64,${targetVocalsB64}`}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {(mp3Chunks.length > 0 || finalWav) && (
           <AudioPlayer mp3Chunks={mp3Chunks} finalWav={finalWav} />
