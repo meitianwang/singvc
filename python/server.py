@@ -6,6 +6,7 @@ import tempfile
 import shutil
 import argparse
 import asyncio
+from typing import Optional
 
 os.environ['HF_HUB_CACHE'] = os.path.join(os.path.dirname(__file__), '..', 'checkpoints', 'hf_cache')
 
@@ -58,7 +59,8 @@ def crossfade(chunk1, chunk2, overlap):
 @torch.no_grad()
 @torch.inference_mode()
 def voice_conversion(source, target, diffusion_steps, length_adjust,
-                     inference_cfg_rate, auto_f0_adjust, pitch_shift):
+                     inference_cfg_rate, auto_f0_adjust, pitch_shift,
+                     use_fp16: Optional[bool] = None):
     import torchaudio
     import librosa
     from pydub import AudioSegment
@@ -66,6 +68,8 @@ def voice_conversion(source, target, diffusion_steps, length_adjust,
     bitrate = "320k"
     inference_module = model_f0
     mel_fn = to_mel_f0
+    requested_amp = fp16 if use_fp16 is None else bool(use_fp16)
+    use_amp = requested_amp and device.type in {"cuda", "mps"}
 
     source_audio = librosa.load(source, sr=sr)[0]
     ref_audio = librosa.load(target, sr=sr)[0]
@@ -154,7 +158,15 @@ def voice_conversion(source, target, diffusion_steps, length_adjust,
         chunk_f0 = interpolated_shifted_f0_alt[:, processed_frames:processed_frames + max_source_window]
         is_last_chunk = processed_frames + max_source_window >= cond.size(1)
         cat_condition = torch.cat([prompt_condition, chunk_cond], dim=1)
-        with torch.autocast(device_type=device.type, dtype=torch.float16 if fp16 else torch.float32):
+        if use_amp:
+            with torch.autocast(device_type=device.type, dtype=torch.float16):
+                vc_target = inference_module.cfm.inference(
+                    cat_condition,
+                    torch.LongTensor([cat_condition.size(1)]).to(mel2.device),
+                    mel2, style2, None, diffusion_steps,
+                    inference_cfg_rate=inference_cfg_rate)
+                vc_target = vc_target[:, :, mel2.size(-1):]
+        else:
             vc_target = inference_module.cfm.inference(
                 cat_condition,
                 torch.LongTensor([cat_condition.size(1)]).to(mel2.device),
@@ -347,11 +359,12 @@ def status():
 async def convert(
     source_file: UploadFile = File(...),
     target_file: UploadFile = File(...),
-    diffusion_steps: int = Form(10),
+    diffusion_steps: int = Form(40),
     length_adjust: float = Form(1.0),
     inference_cfg_rate: float = Form(0.7),
-    auto_f0_adjust: bool = Form(True),
+    auto_f0_adjust: bool = Form(False),
     pitch_shift: int = Form(0),
+    use_fp16: Optional[bool] = Form(None),
 ):
     if not model_loaded:
         async def error_stream():
@@ -376,7 +389,7 @@ async def convert(
                 gen = voice_conversion(
                     source_path, target_path,
                     diffusion_steps, length_adjust, inference_cfg_rate,
-                    auto_f0_adjust, pitch_shift
+                    auto_f0_adjust, pitch_shift, use_fp16
                 )
                 for mp3_bytes, final in await loop.run_in_executor(None, lambda: list(gen)):
                     audio_b64 = base64.b64encode(mp3_bytes).decode()
@@ -425,6 +438,25 @@ POSTPROCESS_MODELS = {
 _RESIDUAL_KEYWORDS = {"noise", "echo", "reverb", "other"}
 
 
+def _is_corrupt_model_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    markers = [
+        "pytorchstreamreader failed reading zip archive",
+        "failed finding central directory",
+        "corrupt",
+        "incomplete",
+    ]
+    return any(marker in text for marker in markers)
+
+
+def _safe_remove_file(path: str) -> None:
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
 def _stem_display_name(filename: str) -> str:
     name = os.path.splitext(os.path.basename(filename))[0]
     if "_(" in name:
@@ -434,10 +466,20 @@ def _stem_display_name(filename: str) -> str:
 
 
 def _pick_clean_stem(files: list[str]) -> str:
-    """From post-processor output files, pick the clean (non-residual) stem."""
+    """From post-processor output files, pick the clean (non-residual) stem.
+
+    UVR-DeNoise outputs '(No Noise)' (clean) and '(Noise)' (residual).
+    UVR-De-Echo outputs '(No Echo)' (clean) and '(Echo)' (residual).
+    A keyword like 'noise' preceded by 'no ' means clean, not residual.
+    """
     for f in files:
         name_lower = os.path.basename(f).lower()
-        if not any(kw in name_lower for kw in _RESIDUAL_KEYWORDS):
+        # A stem is residual only when the keyword appears WITHOUT a "no " prefix
+        is_residual = any(
+            kw in name_lower and f"no {kw}" not in name_lower
+            for kw in _RESIDUAL_KEYWORDS
+        )
+        if not is_residual:
             return f
     # fallback: largest file is usually the clean signal
     return max(files, key=lambda f: os.path.getsize(f))
@@ -517,9 +559,30 @@ async def separate(
                 )
                 if single_stem:
                     sep_kwargs["output_single_stem"] = single_stem
-                separator = Separator(**sep_kwargs)
-                separator.load_model(model_filename=model)
-                return separator.separate(audio_path)
+                model_path = os.path.join(SEP_MODEL_DIR, model)
+
+                def separate_once():
+                    separator = Separator(**sep_kwargs)
+                    separator.load_model(model_filename=model)
+                    return separator.separate(audio_path)
+
+                try:
+                    return separate_once()
+                except BaseException as first_exc:
+                    # audio-separator may call sys.exit(1) on model load failure,
+                    # which appears here as SystemExit and would otherwise kill the stream.
+                    should_retry = isinstance(first_exc, SystemExit) or _is_corrupt_model_error(first_exc)
+                    if not should_retry:
+                        raise RuntimeError(f"Separation failed: {first_exc}") from first_exc
+
+                    _safe_remove_file(model_path)
+                    try:
+                        return separate_once()
+                    except BaseException as retry_exc:
+                        raise RuntimeError(
+                            f"Failed to load separator model '{model}'. "
+                            f"The local model file may be corrupted and auto re-download retry failed: {retry_exc}"
+                        ) from retry_exc
 
             output_files = await loop.run_in_executor(None, run_separation)
 
@@ -546,6 +609,17 @@ async def separate(
             else:
                 final_files = output_files
 
+            # Separator outputs can still include extra stems in some models;
+            # when single_stem is requested, filter again before streaming.
+            if single_stem:
+                key = single_stem.lower()
+                filtered = [
+                    f for f in final_files
+                    if key in _stem_display_name(f).lower() or key in os.path.basename(f).lower()
+                ]
+                if filtered:
+                    final_files = filtered
+
             for fpath in final_files:
                 stem_name = _stem_display_name(fpath)
                 fname = os.path.basename(fpath)
@@ -554,7 +628,7 @@ async def separate(
                 yield f"data: {json.dumps({'type': 'stem', 'name': stem_name, 'filename': fname, 'audio': audio_b64})}\n\n"
 
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
-        except Exception as e:
+        except BaseException as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -582,6 +656,11 @@ if __name__ == "__main__":
         device = torch.device("mps")
     else:
         device = torch.device("cpu")
+
+    # MPS fp16 can be numerically unstable for singing VC; prefer fp32 unless overridden per request.
+    if device.type == "mps" and fp16:
+        print("MPS detected, disabling global fp16 by default for quality (can override via use_fp16=true).")
+        fp16 = False
 
     # Load models in background so /status can be polled immediately
     import threading

@@ -11,6 +11,7 @@ export interface Params {
   inference_cfg_rate: number;
   auto_f0_adjust: boolean;
   pitch_shift: number;
+  use_fp16: boolean;
 }
 
 type Status = "loading" | "ready" | "converting" | "done" | "error";
@@ -34,8 +35,7 @@ async function extractVocals(
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let vocalsB64: string | null = null;
-  let vocalsFilename = "vocals.wav";
+  const stems: Array<{ name?: string; filename?: string; audio: string }> = [];
 
   while (true) {
     const { done, value } = await reader.read();
@@ -47,15 +47,28 @@ async function extractVocals(
       if (!line.startsWith("data: ")) continue;
       const payload = JSON.parse(line.slice(6));
       if (payload.type === "stem") {
-        vocalsB64 = payload.audio;
-        vocalsFilename = payload.filename;
+        stems.push(payload);
       } else if (payload.type === "error") {
         throw new Error(payload.message);
       }
     }
   }
 
-  if (!vocalsB64) throw new Error("人声提取失败：未收到音频数据");
+  if (stems.length === 0) throw new Error("人声提取失败：未收到音频数据");
+  const vocalsStem =
+    stems.find((s) => {
+      const name = (s.name ?? "").toLowerCase();
+      const filename = (s.filename ?? "").toLowerCase();
+      return (
+        name.includes("vocal") ||
+        filename.includes("vocal") ||
+        name.includes("人声") ||
+        filename.includes("人声")
+      );
+    }) ?? stems[0];
+  const vocalsB64 = vocalsStem.audio;
+  const vocalsFilename = vocalsStem.filename ?? "vocals.wav";
+
   const bytes = Uint8Array.from(atob(vocalsB64), (c) => c.charCodeAt(0));
   return {
     file: new File([bytes], vocalsFilename, { type: "audio/wav" }),
@@ -85,11 +98,12 @@ export default function App() {
 
   // Conversion params
   const [params, setParams] = useState<Params>({
-    diffusion_steps: 10,
+    diffusion_steps: 40,
     length_adjust: 1.0,
     inference_cfg_rate: 0.7,
-    auto_f0_adjust: true,
+    auto_f0_adjust: false,
     pitch_shift: 0,
+    use_fp16: true,
   });
 
   // Status
@@ -115,6 +129,10 @@ export default function App() {
         if (data.loaded) {
           setServerReady(true);
           setStatus("ready");
+          setParams((prev) => ({
+            ...prev,
+            use_fp16: data.device === "mps" ? false : prev.use_fp16,
+          }));
           clearInterval(pollRef.current!);
         } else if (data.error) {
           setStatus("error");
@@ -164,6 +182,7 @@ export default function App() {
       formData.append("inference_cfg_rate", String(params.inference_cfg_rate));
       formData.append("auto_f0_adjust", String(params.auto_f0_adjust));
       formData.append("pitch_shift", String(params.pitch_shift));
+      formData.append("use_fp16", String(params.use_fp16));
 
       const res = await fetch(`http://127.0.0.1:${serverPort}/convert`, {
         method: "POST",

@@ -58,12 +58,24 @@ export default function ParamSliders({ params, onChange }: Props) {
           <label className="checkbox-label">
             <input
               type="checkbox"
+              checked={params.use_fp16}
+              onChange={(e) => set("use_fp16", e.target.checked)}
+            />
+            <span>启用 FP16</span>
+          </label>
+          <div className="slider-hint">速度更快但可能影响稳定性，MPS 设备建议关闭</div>
+        </div>
+
+        <div className="slider-row checkbox-row">
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
               checked={params.auto_f0_adjust}
               onChange={(e) => set("auto_f0_adjust", e.target.checked)}
             />
             <span>自动 F0 调整</span>
           </label>
-          <div className="slider-hint">自动将源音高对齐参考音高</div>
+          <div className="slider-hint">自动将源音高对齐参考音高（歌声转换通常建议关闭）</div>
         </div>
       </div>
     </div>
