@@ -21,6 +21,9 @@ __pycache__/
 node_modules/
 dist/
 
+# Rust / Tauri build artifacts
+src-tauri/target/
+
 # misc
 checkpoints/
 test_waves/
