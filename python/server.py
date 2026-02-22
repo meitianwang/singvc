@@ -267,7 +267,13 @@ def load_models(checkpoint=None, config=None):
         vocoder_type = model_params.vocoder.type
         if vocoder_type == 'bigvgan':
             from modules.bigvgan import bigvgan
-            bigvgan_model = bigvgan.BigVGAN.from_pretrained(model_params.vocoder.name, use_cuda_kernel=False)
+            # 优先使用 R2 下载的本地模型
+            r2_bigvgan = os.path.join(os.path.dirname(__file__), '..', 'checkpoints', 'bigvgan')
+            if os.path.exists(os.path.join(r2_bigvgan, 'config.json')):
+                bigvgan_name = os.path.abspath(r2_bigvgan)
+            else:
+                bigvgan_name = model_params.vocoder.name
+            bigvgan_model = bigvgan.BigVGAN.from_pretrained(bigvgan_name, use_cuda_kernel=False)
             bigvgan_model.remove_weight_norm()
             vocoder_fn = bigvgan_model.eval().to(device)
         elif vocoder_type == 'hifigan':
@@ -283,9 +289,15 @@ def load_models(checkpoint=None, config=None):
 
         from transformers import AutoFeatureExtractor, WhisperModel
         whisper_name = model_params.speech_tokenizer.name
-        whisper_model = WhisperModel.from_pretrained(whisper_name, torch_dtype=torch.float16, use_safetensors=False).to(device)
+        # 优先使用 R2 下载的本地模型
+        r2_whisper = os.path.join(os.path.dirname(__file__), '..', 'checkpoints', 'whisper-small')
+        if os.path.exists(os.path.join(r2_whisper, 'config.json')):
+            whisper_local = os.path.abspath(r2_whisper)
+        else:
+            whisper_local = whisper_name
+        whisper_model = WhisperModel.from_pretrained(whisper_local, torch_dtype=torch.float16, use_safetensors=False).to(device)
         del whisper_model.decoder
-        whisper_feature_extractor = AutoFeatureExtractor.from_pretrained(whisper_name)
+        whisper_feature_extractor = AutoFeatureExtractor.from_pretrained(whisper_local)
 
         def semantic_fn_inner(waves_16k):
             ori_inputs = whisper_feature_extractor([waves_16k.squeeze(0).cpu().numpy()],
@@ -353,6 +365,61 @@ def status():
         "sr": sr,
         "fp16": fp16,
     }
+
+
+@app.get("/models/status")
+def models_status():
+    """检查各模型文件是否存在。"""
+    project_root = os.path.join(os.path.dirname(__file__), '..')
+    checks = {
+        "seed_vc": os.path.exists(os.path.join(project_root, "checkpoints/seed-vc/DiT_seed_v2_uvit_whisper_base_f0_44k_bigvgan_pruned_ft_ema_v2.pth")),
+        "campplus": os.path.exists(os.path.join(project_root, "checkpoints/campplus/campplus_cn_common.bin")),
+        "bigvgan": os.path.exists(os.path.join(project_root, "checkpoints/bigvgan/bigvgan_generator.pt")),
+        "whisper": os.path.exists(os.path.join(project_root, "checkpoints/whisper-small/pytorch_model.bin")),
+        "rmvpe": os.path.exists(os.path.join(project_root, "checkpoints/rmvpe/rmvpe.pt")),
+        "uvr5_mdx": os.path.exists(os.path.join(project_root, "checkpoints/uvr5_models/UVR-MDX-NET-Inst_HQ_3.onnx")),
+        "uvr5_roformer": os.path.exists(os.path.join(project_root, "checkpoints/uvr5_models/model_bs_roformer_ep_368_sdr_12.9628.ckpt")),
+        "uvr5_denoise": os.path.exists(os.path.join(project_root, "checkpoints/uvr5_models/UVR-DeNoise.pth")),
+        "uvr5_deecho": os.path.exists(os.path.join(project_root, "checkpoints/uvr5_models/UVR-De-Echo-Aggressive.pth")),
+    }
+    # Also check HF cache as fallback
+    hf_cache = os.path.join(project_root, "checkpoints/hf_cache")
+    hf_fallbacks = {
+        "seed_vc": os.path.exists(os.path.join(hf_cache, "models--Plachta--Seed-VC")),
+        "campplus": os.path.exists(os.path.join(hf_cache, "models--funasr--campplus")),
+        "bigvgan": os.path.exists(os.path.join(hf_cache, "models--nvidia--bigvgan_v2_44khz_128band_512x")),
+        "whisper": os.path.exists(os.path.join(hf_cache, "models--openai--whisper-small")),
+        "rmvpe": os.path.exists(os.path.join(hf_cache, "models--lj1995--VoiceConversionWebUI")),
+    }
+    combined = {}
+    for k, v in checks.items():
+        combined[k] = v or hf_fallbacks.get(k, False)
+    all_vc_ready = all(combined.get(k, False) for k in ["seed_vc", "campplus", "bigvgan", "whisper", "rmvpe"])
+    return {
+        "models": combined,
+        "vc_ready": all_vc_ready,
+        "all_ready": all(combined.values()),
+    }
+
+
+@app.post("/models/download")
+async def download_models_endpoint():
+    """触发从 R2 下载缺失的模型。"""
+    async def stream():
+        try:
+            sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+            from model_manager import ensure_models
+            loop = asyncio.get_event_loop()
+            ok = await loop.run_in_executor(None, ensure_models)
+            if ok:
+                yield f"data: {json.dumps({'type': 'done', 'message': '所有模型已就绪'})}\n\n"
+            else:
+                yield f"data: {json.dumps({'type': 'error', 'message': '未配置模型下载地址'})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.post("/convert")
@@ -661,6 +728,14 @@ if __name__ == "__main__":
     if device.type == "mps" and fp16:
         print("MPS detected, disabling global fp16 by default for quality (can override via use_fp16=true).")
         fp16 = False
+
+    # 尝试从 R2 下载缺失的模型（如果配置了下载地址）
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+        from model_manager import ensure_models
+        ensure_models()
+    except Exception as e:
+        print(f"Model download check skipped: {e}")
 
     # Load models in background so /status can be polled immediately
     import threading

@@ -2,6 +2,9 @@
 set -e
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+
+# 如果无法直连 HuggingFace，使用镜像
+export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 PYTHON_SERVER="$ROOT/python/server.py"
 PORT=18888
 PID_FILE="$ROOT/.python_server.pid"

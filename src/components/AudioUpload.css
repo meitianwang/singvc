@@ -1,46 +1,77 @@
+/* ===== Channel Input Strip ===== */
 .upload-zone {
-  border: 2px dashed #3a3a50;
-  border-radius: 12px;
-  padding: 28px 16px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 24px 16px;
   text-align: center;
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
-  background: #13131c;
+  transition: all var(--duration-fast);
+  background: var(--bg-channel);
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 8px;
+  position: relative;
+  box-shadow: inset 0 1px 0 var(--border-subtle), 0 1px 3px rgba(0,0,0,0.3);
 }
+
+/* Screw holes — hardware detail */
+.upload-zone::before,
+.upload-zone::after {
+  content: '';
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-default);
+  top: 8px;
+}
+.upload-zone::before { left: 8px; }
+.upload-zone::after { right: 8px; }
 
 .upload-zone:hover,
 .upload-zone.dragging {
-  border-color: #7c3aed;
-  background: #1a1428;
+  border-color: var(--led-green);
+  box-shadow: inset 0 1px 0 var(--border-subtle), 0 0 12px var(--led-green-dim);
 }
 
 .upload-zone.has-file {
-  border-color: #4ade80;
+  border-color: var(--led-green);
   border-style: solid;
 }
 
+/* Green LED glow when file loaded */
+.upload-zone.has-file::before {
+  background: var(--led-green);
+  box-shadow: 0 0 4px var(--led-green);
+  border-color: transparent;
+}
+
 .upload-icon {
-  font-size: 28px;
+  font-size: 24px;
+  filter: grayscale(0.3);
 }
 
 .upload-label {
-  font-size: 13px;
-  font-weight: 600;
-  color: #a0a0c0;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .upload-filename {
-  font-size: 12px;
-  color: #4ade80;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--led-green);
   word-break: break-all;
   max-width: 200px;
+  text-shadow: 0 0 8px var(--led-green-dim);
 }
 
 .upload-hint {
-  font-size: 12px;
-  color: #555;
+  font-size: 11px;
+  color: var(--text-tertiary);
 }

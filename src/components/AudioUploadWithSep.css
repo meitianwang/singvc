@@ -1,43 +1,52 @@
+/* ===== Channel Strip With Processing ===== */
 .upload-with-sep {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .sep-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   padding: 0 4px;
   flex-wrap: wrap;
 }
 
 .sep-row-disabled {
-  opacity: 0.4;
+  opacity: 0.3;
   pointer-events: none;
 }
 
 .sep-check {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: #a090c8;
+  gap: 5px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  transition: color var(--duration-fast);
+}
+
+.sep-check:hover {
+  color: var(--led-green);
 }
 
 .sep-check input[type="checkbox"] {
-  width: 14px;
-  height: 14px;
-  accent-color: #7c3aed;
+  width: 12px;
+  height: 12px;
+  accent-color: var(--led-green);
   cursor: pointer;
 }
 
 .sep-selects {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   padding: 0 4px;
   flex-wrap: wrap;
 }
@@ -45,16 +54,23 @@
 .sep-model-mini {
   flex: 1;
   min-width: 0;
-  background: #1a1a2e;
-  border: 1px solid #3a3a50;
-  border-radius: 6px;
-  color: #c0b0ff;
-  font-size: 12px;
-  padding: 5px 8px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-family: var(--font-mono);
+  padding: 4px 8px;
   cursor: pointer;
   outline: none;
+  transition: border-color var(--duration-fast);
+}
+
+.sep-model-mini:hover {
+  border-color: var(--border-strong);
 }
 
 .sep-model-mini:focus {
-  border-color: #7c3aed;
+  border-color: var(--led-green);
+  box-shadow: 0 0 4px var(--led-green-dim);
 }

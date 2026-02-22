@@ -1,3 +1,57 @@
+/* ===== SingVC Mixer Console Design System ===== */
+:root {
+  /* Surface — hardware console dark tones */
+  --bg-root: #111113;
+  --bg-surface: #19191d;
+  --bg-elevated: #212126;
+  --bg-hover: #2a2a30;
+  --bg-inset: #0d0d0f;
+  --bg-channel: #16161a;
+
+  /* Border — beveled hardware edges */
+  --border-subtle: rgba(255, 255, 255, 0.05);
+  --border-default: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.12);
+  --border-groove: #0a0a0c;
+
+  /* Text */
+  --text-primary: #d8d8dc;
+  --text-secondary: #8a8a94;
+  --text-tertiary: #55555e;
+  --text-inverse: #111113;
+  --text-led: #b8ffc4;
+
+  /* LED Colors — classic console indicators */
+  --led-green: #3ddc6e;
+  --led-green-dim: rgba(61, 220, 110, 0.15);
+  --led-amber: #f0a830;
+  --led-amber-dim: rgba(240, 168, 48, 0.12);
+  --led-red: #e84040;
+  --led-red-dim: rgba(232, 64, 64, 0.10);
+  --led-blue: #4898e0;
+  --led-blue-dim: rgba(72, 152, 224, 0.10);
+
+  /* Fader / Knob accent */
+  --fader-track: #2a2a30;
+  --fader-fill: #3ddc6e;
+  --fader-thumb: #e0e0e4;
+
+  /* Typography */
+  --font-sans: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+
+  /* Radius — more angular, hardware-like */
+  --radius-xs: 3px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+
+  /* Transitions */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 100ms;
+  --duration-normal: 200ms;
+}
+
 * {
   box-sizing: border-box;
   margin: 0;
@@ -5,19 +59,26 @@
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #0f0f13;
-  color: #e8e8f0;
+  font-family: var(--font-sans);
+  background: var(--bg-root);
+  color: var(--text-primary);
   min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  line-height: 1.4;
+  font-size: 13px;
 }
 
-::-webkit-scrollbar {
-  width: 6px;
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: var(--bg-root); }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 2px; }
+
+::selection {
+  background: var(--led-green-dim);
+  color: var(--led-green);
 }
-::-webkit-scrollbar-track {
-  background: #1a1a24;
-}
-::-webkit-scrollbar-thumb {
-  background: #3a3a50;
-  border-radius: 3px;
+
+:focus-visible {
+  outline: 1px solid var(--led-green);
+  outline-offset: 1px;
 }

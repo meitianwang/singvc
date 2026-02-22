@@ -1,8 +1,9 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import AudioUploadWithSep from "./components/AudioUploadWithSep";
-import ParamSliders from "./components/ParamSliders";
+import ParamSliders, { type SepSettings } from "./components/ParamSliders";
 import AudioPlayer from "./components/AudioPlayer";
+import HistoryPanel, { HistoryItem } from "./components/HistoryPanel";
 import "./App.css";
 
 export interface Params {
@@ -84,21 +85,25 @@ export default function App() {
   const [sourceFile, setSourceFile] = useState<File | null>(null);
   const [targetFile, setTargetFile] = useState<File | null>(null);
 
-  // Per-file separation options
-  const [sourceSepEnabled, setSourceSepEnabled] = useState(false);
-  const [sourceSepModel, setSourceSepModel] = useState("UVR-MDX-NET-Inst_HQ_3.onnx");
-  const [sourceSepPP, setSourceSepPP] = useState("");
-  const [targetSepEnabled, setTargetSepEnabled] = useState(false);
-  const [targetSepModel, setTargetSepModel] = useState("UVR-MDX-NET-Inst_HQ_3.onnx");
-  const [targetSepPP, setTargetSepPP] = useState("");
+  // Per-file separation options (unified model/postprocess)
+  const [sep, setSep] = useState<SepSettings>({
+    sourceEnabled: true,
+    targetEnabled: false,
+    model: "model_bs_roformer_ep_368_sdr_12.9628.ckpt",
+    postprocess: "both",
+  });
 
   // Intermediate separation results (base64 WAV)
   const [sourceVocalsB64, setSourceVocalsB64] = useState<string | null>(null);
   const [targetVocalsB64, setTargetVocalsB64] = useState<string | null>(null);
 
+  // Cache: remember which file+model+pp combo produced the cached vocals
+  const sourceSepCache = useRef<{ key: string; file: File; audioB64: string } | null>(null);
+  const targetSepCache = useRef<{ key: string; file: File; audioB64: string } | null>(null);
+
   // Conversion params
   const [params, setParams] = useState<Params>({
-    diffusion_steps: 40,
+    diffusion_steps: 50,
     length_adjust: 1.0,
     inference_cfg_rate: 0.7,
     auto_f0_adjust: false,
@@ -113,6 +118,10 @@ export default function App() {
   const [mp3Chunks, setMp3Chunks] = useState<string[]>([]);
   const [finalWav, setFinalWav] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // History
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const handleClearHistory = useCallback(() => setHistory([]), []);
 
   useEffect(() => {
     invoke<number>("get_server_port")
@@ -152,27 +161,44 @@ export default function App() {
     setMp3Chunks([]);
     setFinalWav(null);
     setErrorMsg("");
-    setSourceVocalsB64(null);
-    setTargetVocalsB64(null);
 
     try {
       let actualSource = sourceFile;
       let actualTarget = targetFile;
 
-      if (sourceSepEnabled) {
-        setProgressMsg("正在提取源音频人声…");
-        const result = await extractVocals(sourceFile, sourceSepModel, sourceSepPP, serverPort);
-        actualSource = result.file;
-        setSourceVocalsB64(result.audioB64);
-      }
-      if (targetSepEnabled) {
-        setProgressMsg("正在提取参考音频人声…");
-        const result = await extractVocals(targetFile, targetSepModel, targetSepPP, serverPort);
-        actualTarget = result.file;
-        setTargetVocalsB64(result.audioB64);
+      if (sep.sourceEnabled) {
+        const cacheKey = `${sourceFile.name}|${sourceFile.size}|${sep.model}|${sep.postprocess}`;
+        if (sourceSepCache.current?.key === cacheKey) {
+          actualSource = sourceSepCache.current.file;
+          setSourceVocalsB64(sourceSepCache.current.audioB64);
+        } else {
+          setProgressMsg("正在提取原始音轨人声…");
+          const result = await extractVocals(sourceFile, sep.model, sep.postprocess, serverPort);
+          actualSource = result.file;
+          setSourceVocalsB64(result.audioB64);
+          sourceSepCache.current = { key: cacheKey, file: result.file, audioB64: result.audioB64 };
+        }
+      } else {
+        setSourceVocalsB64(null);
       }
 
-      setProgressMsg("语音转换中…");
+      if (sep.targetEnabled) {
+        const cacheKey = `${targetFile.name}|${targetFile.size}|${sep.model}|${sep.postprocess}`;
+        if (targetSepCache.current?.key === cacheKey) {
+          actualTarget = targetSepCache.current.file;
+          setTargetVocalsB64(targetSepCache.current.audioB64);
+        } else {
+          setProgressMsg("正在提取目标音色人声…");
+          const result = await extractVocals(targetFile, sep.model, sep.postprocess, serverPort);
+          actualTarget = result.file;
+          setTargetVocalsB64(result.audioB64);
+          targetSepCache.current = { key: cacheKey, file: result.file, audioB64: result.audioB64 };
+        }
+      } else {
+        setTargetVocalsB64(null);
+      }
+
+      setProgressMsg("调音处理中…");
 
       const formData = new FormData();
       formData.append("source_file", actualSource);
@@ -208,6 +234,22 @@ export default function App() {
             setFinalWav(payload.audio);
             setStatus("done");
             setProgressMsg("");
+            setHistory((prev) => [
+              {
+                id: Date.now().toString(36),
+                timestamp: Date.now(),
+                sourceName: sourceFile.name,
+                targetName: targetFile.name,
+                params: {
+                  diffusion_steps: params.diffusion_steps,
+                  pitch_shift: params.pitch_shift,
+                  length_adjust: params.length_adjust,
+                  inference_cfg_rate: params.inference_cfg_rate,
+                },
+                wavB64: payload.audio,
+              },
+              ...prev,
+            ]);
           } else if (payload.type === "error") {
             setStatus("error");
             setErrorMsg(payload.message);
@@ -229,63 +271,54 @@ export default function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1>SingVC</h1>
+        <div className="app-logo">
+          <div className="app-logo-icon">S</div>
+          <span className="app-logo-text">SingVC</span>
+          <span className="app-logo-tag">Tuner</span>
+        </div>
         <div className={`status-badge status-${status}`}>
-          {status === "loading" && "⏳ 模型加载中…"}
-          {status === "ready" && "✓ 就绪"}
-          {status === "converting" && "⚙ 处理中…"}
-          {status === "done" && "✓ 完成"}
-          {status === "error" && "✗ 错误"}
+          {status === "loading" && "LOADING"}
+          {status === "ready" && "READY"}
+          {status === "converting" && "PROCESSING"}
+          {status === "done" && "DONE"}
+          {status === "error" && "ERROR"}
         </div>
       </header>
 
       <main className="app-main">
         <div className="upload-row">
           <AudioUploadWithSep
-            label="源音频（待转换）"
-            file={sourceFile}
-            onFile={setSourceFile}
-            sepEnabled={sourceSepEnabled}
-            onSepEnabled={setSourceSepEnabled}
-            sepModel={sourceSepModel}
-            onSepModel={setSourceSepModel}
-            postprocess={sourceSepPP}
-            onPostprocess={setSourceSepPP}
-            disabled={busy}
-          />
-          <AudioUploadWithSep
-            label="参考音频（目标音色）"
+            label="原始音轨"
             file={targetFile}
             onFile={setTargetFile}
-            sepEnabled={targetSepEnabled}
-            onSepEnabled={setTargetSepEnabled}
-            sepModel={targetSepModel}
-            onSepModel={setTargetSepModel}
-            postprocess={targetSepPP}
-            onPostprocess={setTargetSepPP}
-            disabled={busy}
+          />
+          <AudioUploadWithSep
+            label="目标音色"
+            file={sourceFile}
+            onFile={setSourceFile}
           />
         </div>
 
-        <ParamSliders params={params} onChange={setParams} />
+        <ParamSliders params={params} onChange={setParams}
+          sep={sep} onSepChange={setSep} disabled={busy} />
 
         {errorMsg && <div className="error-box">{errorMsg}</div>}
 
         {busy && progressMsg && (
-          <div className="progress-msg">⚙ {progressMsg}</div>
+          <div className="progress-msg">{progressMsg}</div>
         )}
 
         <button className="convert-btn" onClick={handleConvert} disabled={!canConvert}>
-          {busy ? "处理中…" : "开始转换"}
+          {busy ? "调音中…" : "开始调音"}
         </button>
 
         {showIntermediates && (
           <div className="intermediates">
-            <div className="intermediates-title">分离结果预览</div>
+            <div className="intermediates-title">人声提取预览</div>
             <div className="intermediates-grid">
               {sourceVocalsB64 && (
                 <div className="intermediate-card">
-                  <div className="intermediate-label">源音频 — 提取人声</div>
+                  <div className="intermediate-label">原始音轨 — 人声</div>
                   <audio
                     controls
                     className="intermediate-audio"
@@ -295,7 +328,7 @@ export default function App() {
               )}
               {targetVocalsB64 && (
                 <div className="intermediate-card">
-                  <div className="intermediate-label">参考音频 — 提取人声</div>
+                  <div className="intermediate-label">目标音色 — 人声</div>
                   <audio
                     controls
                     className="intermediate-audio"
@@ -310,6 +343,8 @@ export default function App() {
         {(mp3Chunks.length > 0 || finalWav) && (
           <AudioPlayer mp3Chunks={mp3Chunks} finalWav={finalWav} />
         )}
+
+        <HistoryPanel items={history} onClear={handleClearHistory} />
       </main>
     </div>
   );

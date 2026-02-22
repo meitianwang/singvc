@@ -1,131 +1,317 @@
+/* ===== Mixer Console Layout ===== */
 .app {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 1px,
+      rgba(255,255,255,0.008) 1px,
+      rgba(255,255,255,0.008) 2px
+    ),
+    var(--bg-root);
 }
 
+/* ===== Top Bar — transport strip ===== */
 .app-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 28px;
-  border-bottom: 1px solid #2a2a3a;
-  background: #13131c;
+  padding: 0 20px;
+  height: 44px;
+  background: var(--bg-surface);
+  border-bottom: 2px solid var(--border-groove);
+  box-shadow: 0 1px 0 var(--border-subtle);
+  position: sticky;
+  top: 0;
+  z-index: 100;
 }
 
-.app-header h1 {
-  font-size: 20px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  color: #c0b0ff;
+.app-logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
+.app-logo-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-xs);
+  background: var(--led-green);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--text-inverse);
+  font-weight: 800;
+  font-family: var(--font-mono);
+  box-shadow: 0 0 8px var(--led-green-dim), inset 0 1px 0 rgba(255,255,255,0.2);
+}
+
+.app-logo-text {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-family: var(--font-mono);
+}
+
+.app-logo-tag {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+  background: var(--bg-inset);
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-default);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* ===== Status LED ===== */
 .status-badge {
-  font-size: 12px;
-  padding: 4px 12px;
-  border-radius: 20px;
-  background: #1e1e2e;
-  border: 1px solid #3a3a50;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  padding: 3px 10px;
+  border-radius: var(--radius-xs);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-default);
 }
 
-.status-loading   { color: #888 }
-.status-ready     { color: #4ade80; border-color: #22543d }
-.status-converting { color: #facc15; border-color: #713f12 }
-.status-done      { color: #60a5fa; border-color: #1e3a5f }
-.status-error     { color: #f87171; border-color: #7f1d1d }
+.status-badge::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
 
+.status-loading {
+  color: var(--text-tertiary);
+}
+.status-loading::before {
+  background: var(--text-tertiary);
+  box-shadow: 0 0 4px var(--text-tertiary);
+  animation: led-blink 1.5s ease-in-out infinite;
+}
+
+.status-ready {
+  color: var(--led-green);
+}
+.status-ready::before {
+  background: var(--led-green);
+  box-shadow: 0 0 6px var(--led-green);
+}
+
+.status-converting {
+  color: var(--led-amber);
+}
+.status-converting::before {
+  background: var(--led-amber);
+  box-shadow: 0 0 6px var(--led-amber);
+  animation: led-blink 0.8s ease-in-out infinite;
+}
+
+.status-done {
+  color: var(--led-blue);
+}
+.status-done::before {
+  background: var(--led-blue);
+  box-shadow: 0 0 6px var(--led-blue);
+}
+
+.status-error {
+  color: var(--led-red);
+}
+.status-error::before {
+  background: var(--led-red);
+  box-shadow: 0 0 6px var(--led-red);
+  animation: led-blink 0.4s ease-in-out infinite;
+}
+
+@keyframes led-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+/* ===== Console Body ===== */
 .app-main {
   flex: 1;
-  padding: 28px;
+  padding: 20px;
   display: flex;
   flex-direction: column;
-  gap: 24px;
-  max-width: 860px;
+  gap: 16px;
+  max-width: 960px;
   margin: 0 auto;
   width: 100%;
 }
 
+/* ===== Channel Strip Row (Input) ===== */
 .upload-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 16px;
-}
-
-.error-box {
-  background: #2d0a0a;
-  border: 1px solid #7f1d1d;
-  border-radius: 8px;
-  padding: 12px 16px;
-  color: #f87171;
-  font-size: 13px;
-}
-
-.progress-msg {
-  text-align: center;
-  color: #facc15;
-  font-size: 13px;
-  padding: 4px 0;
-}
-
-.convert-btn {
-  align-self: center;
-  padding: 12px 48px;
-  border-radius: 8px;
-  border: none;
-  background: #7c3aed;
-  color: #fff;
-  font-size: 15px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.convert-btn:hover:not(:disabled) {
-  background: #6d28d9;
-}
-
-.convert-btn:disabled {
-  background: #3a2e50;
-  color: #666;
-  cursor: not-allowed;
-}
-
-.intermediates {
-  background: #1a1a2e;
-  border: 1px solid #2a2a3a;
-  border-radius: 10px;
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
   gap: 12px;
 }
 
+/* ===== Rack Section Label ===== */
+.section-label {
+  font-size: 9px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  padding: 0 2px;
+}
+
+/* ===== Error — red LED alert ===== */
+.error-box {
+  background: var(--led-red-dim);
+  border: 1px solid rgba(232, 64, 64, 0.25);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  color: var(--led-red);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  line-height: 1.5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.error-box::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--led-red);
+  box-shadow: 0 0 6px var(--led-red);
+  flex-shrink: 0;
+  animation: led-blink 0.6s ease-in-out infinite;
+}
+
+/* ===== Progress — amber processing ===== */
+.progress-msg {
+  text-align: center;
+  color: var(--led-amber);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  padding: 6px 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.progress-msg::before {
+  content: '';
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--led-amber-dim);
+  border-top-color: var(--led-amber);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ===== Master Button — REC style ===== */
+.convert-btn {
+  align-self: center;
+  padding: 10px 40px;
+  border-radius: var(--radius-sm);
+  border: 2px solid var(--led-green);
+  background: var(--bg-inset);
+  color: var(--led-green);
+  font-size: 12px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  transition: all var(--duration-fast);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  box-shadow: 0 0 12px var(--led-green-dim);
+  position: relative;
+}
+
+.convert-btn:hover:not(:disabled) {
+  background: var(--led-green);
+  color: var(--text-inverse);
+  box-shadow: 0 0 20px var(--led-green-dim), inset 0 1px 0 rgba(255,255,255,0.2);
+}
+
+.convert-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.convert-btn:disabled {
+  border-color: var(--border-default);
+  color: var(--text-tertiary);
+  cursor: not-allowed;
+  box-shadow: none;
+  background: var(--bg-inset);
+}
+
+/* ===== Intermediates — monitor section ===== */
+.intermediates {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .intermediates-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: #a090c8;
+  font-size: 9px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
 }
 
 .intermediates-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 12px;
+  gap: 10px;
 }
 
 .intermediate-card {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
+  background: var(--bg-inset);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
 }
 
 .intermediate-label {
-  font-size: 12px;
-  color: #7c6aab;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .intermediate-audio {
   width: 100%;
-  height: 36px;
-  border-radius: 6px;
-  accent-color: #7c3aed;
+  height: 32px;
+  border-radius: var(--radius-xs);
 }

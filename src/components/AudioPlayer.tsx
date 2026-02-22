@@ -26,7 +26,9 @@ export default function AudioPlayer({ mp3Chunks, finalWav }: Props) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "singvc_output.wav";
+    const ts = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    a.download = `singvc_${pad(ts.getMonth()+1)}${pad(ts.getDate())}_${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}.wav`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -45,9 +47,11 @@ export default function AudioPlayer({ mp3Chunks, finalWav }: Props) {
       {finalWav ? (
         <>
           <audio ref={audioRef} controls className="audio-element" />
-          <button className="download-btn" onClick={handleDownload}>
-            下载 WAV
-          </button>
+          <div className="player-actions">
+            <button className="download-btn download-btn-primary" onClick={handleDownload}>
+              ⬇ 下载 WAV
+            </button>
+          </div>
         </>
       ) : (
         <div className="player-waiting">转换完成后可播放和下载</div>
