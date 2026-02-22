@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { downloadWav } from "../downloadWav";
 import "./AudioPlayer.css";
 
 interface Props {
@@ -21,16 +22,10 @@ export default function AudioPlayer({ mp3Chunks, finalWav }: Props) {
 
   function handleDownload() {
     if (!finalWav) return;
-    const wavBytes = Uint8Array.from(atob(finalWav), (c) => c.charCodeAt(0));
-    const blob = new Blob([wavBytes], { type: "audio/wav" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
     const ts = new Date();
     const pad = (n: number) => String(n).padStart(2, "0");
-    a.download = `singvc_${pad(ts.getMonth()+1)}${pad(ts.getDate())}_${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}.wav`;
-    a.click();
-    URL.revokeObjectURL(url);
+    const filename = `singvc_${pad(ts.getMonth()+1)}${pad(ts.getDate())}_${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}.wav`;
+    downloadWav(finalWav, filename);
   }
 
   return (

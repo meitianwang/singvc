@@ -47,12 +47,13 @@ image = (
         "descript-audio-codec==1.0.0",
     )
     .pip_install(
-        "onnxruntime-gpu==1.17.1",
+        "onnxruntime-gpu>=1.18.0",
         "protobuf>=3.20,<5",
     )
     .pip_install(
         "audio-separator[gpu]>=0.19.0",
     )
+    .run_commands("python -c 'from audio_separator.separator import Separator; print(\"audio-separator OK\")'")
     .add_local_dir("modules", "/app/modules")
     .add_local_file("hf_utils.py", "/app/hf_utils.py")
     .add_local_dir("configs", "/app/configs")
@@ -437,7 +438,7 @@ class Inference:
         # 认证中间件
         @api.middleware("http")
         async def auth_middleware(request: Request, call_next):
-            if request.url.path in ("/status", "/docs", "/openapi.json"):
+            if request.url.path in ("/status", "/docs", "/openapi.json") or request.method == "OPTIONS":
                 return await call_next(request)
             key = request.headers.get("X-API-Key")
             expected = os.environ.get("SINGVC_API_KEY", "")
@@ -671,7 +672,11 @@ class Inference:
 
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 except BaseException as e:
-                    yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+                    import traceback
+                    tb_str = traceback.format_exc()
+                    err_msg = str(e) or repr(e)
+                    print(f"[SEPARATE ERROR] {tb_str}", flush=True)
+                    yield f"data: {json.dumps({'type': 'error', 'message': f'{type(e).__name__}: {err_msg}', 'traceback': tb_str})}\n\n"
                 finally:
                     shutil.rmtree(tmp_dir, ignore_errors=True)
 

@@ -1,8 +1,9 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef } from "react";
 import AudioUploadWithSep from "./components/AudioUploadWithSep";
 import ParamSliders, { type SepSettings } from "./components/ParamSliders";
 import AudioPlayer from "./components/AudioPlayer";
-import HistoryPanel, { HistoryItem } from "./components/HistoryPanel";
+import HistoryPage from "./pages/HistoryPage";
+import { saveWav, addHistoryItem } from "./historyDB";
 import "./App.css";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://127.0.0.1:18888";
@@ -18,6 +19,7 @@ export interface Params {
 }
 
 type Status = "loading" | "ready" | "converting" | "done" | "error";
+type Tab = "tuning" | "history";
 
 /** Call /separate with single_stem=Vocals, return the extracted vocals as a File + base64 audio. */
 async function extractVocals(
@@ -84,6 +86,7 @@ async function extractVocals(
 }
 
 export default function App() {
+  const [activeTab, setActiveTab] = useState<Tab>("tuning");
   const [serverReady, setServerReady] = useState(false);
 
   // Audio files
@@ -123,10 +126,6 @@ export default function App() {
   const [mp3Chunks, setMp3Chunks] = useState<string[]>([]);
   const [finalWav, setFinalWav] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // History
-  const [history, setHistory] = useState<HistoryItem[]>([]);
-  const handleClearHistory = useCallback(() => setHistory([]), []);
 
   useEffect(() => {
     pollRef.current = setInterval(async () => {
@@ -195,8 +194,8 @@ export default function App() {
       setProgressMsg("调音处理中…");
 
       const formData = new FormData();
-      formData.append("source_file", actualSource);
-      formData.append("target_file", actualTarget);
+      formData.append("source_file", actualTarget);
+      formData.append("target_file", actualSource);
       formData.append("diffusion_steps", String(params.diffusion_steps));
       formData.append("length_adjust", String(params.length_adjust));
       formData.append("inference_cfg_rate", String(params.inference_cfg_rate));
@@ -232,22 +231,20 @@ export default function App() {
             setFinalWav(payload.audio);
             setStatus("done");
             setProgressMsg("");
-            setHistory((prev) => [
-              {
-                id: Date.now().toString(36),
-                timestamp: Date.now(),
-                sourceName: sourceFile.name,
-                targetName: targetFile.name,
-                params: {
-                  diffusion_steps: params.diffusion_steps,
-                  pitch_shift: params.pitch_shift,
-                  length_adjust: params.length_adjust,
-                  inference_cfg_rate: params.inference_cfg_rate,
-                },
-                wavB64: payload.audio,
+            const histId = Date.now().toString(36);
+            saveWav(histId, payload.audio);
+            addHistoryItem({
+              id: histId,
+              timestamp: Date.now(),
+              sourceName: sourceFile.name,
+              targetName: targetFile.name,
+              params: {
+                diffusion_steps: params.diffusion_steps,
+                pitch_shift: params.pitch_shift,
+                length_adjust: params.length_adjust,
+                inference_cfg_rate: params.inference_cfg_rate,
               },
-              ...prev,
-            ]);
+            });
           } else if (payload.type === "error") {
             setStatus("error");
             setErrorMsg(payload.message);
@@ -272,8 +269,23 @@ export default function App() {
         <div className="app-logo">
           <div className="app-logo-icon">S</div>
           <span className="app-logo-text">SingVC</span>
-          <span className="app-logo-tag">Tuner</span>
         </div>
+
+        <nav className="tab-nav">
+          <button
+            className={`tab-btn ${activeTab === "tuning" ? "tab-active" : ""}`}
+            onClick={() => setActiveTab("tuning")}
+          >
+            调音
+          </button>
+          <button
+            className={`tab-btn ${activeTab === "history" ? "tab-active" : ""}`}
+            onClick={() => setActiveTab("history")}
+          >
+            历史记录
+          </button>
+        </nav>
+
         <div className={`status-badge status-${status}`}>
           {status === "loading" && "LOADING"}
           {status === "ready" && "READY"}
@@ -283,17 +295,18 @@ export default function App() {
         </div>
       </header>
 
-      <main className="app-main">
+      {/* 调音页用 display:none 隐藏，保持状态不丢失 */}
+      <main className="app-main" style={{ display: activeTab === "tuning" ? undefined : "none" }}>
         <div className="upload-row">
           <AudioUploadWithSep
             label="原始音轨"
-            file={targetFile}
-            onFile={setTargetFile}
-          />
-          <AudioUploadWithSep
-            label="目标音色"
             file={sourceFile}
             onFile={setSourceFile}
+          />
+          <AudioUploadWithSep
+            label="目标旋律"
+            file={targetFile}
+            onFile={setTargetFile}
           />
         </div>
 
@@ -341,9 +354,9 @@ export default function App() {
         {(mp3Chunks.length > 0 || finalWav) && (
           <AudioPlayer mp3Chunks={mp3Chunks} finalWav={finalWav} />
         )}
-
-        <HistoryPanel items={history} onClear={handleClearHistory} />
       </main>
+
+      {activeTab === "history" && <HistoryPage />}
     </div>
   );
 }

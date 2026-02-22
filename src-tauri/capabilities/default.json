@@ -1,0 +1,11 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for SingVC",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "shell:allow-open",
+    "dialog:allow-save",
+    "fs:allow-write"
+  ]
+}

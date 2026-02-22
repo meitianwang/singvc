@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { loadWav } from "../historyDB";
+import { downloadWav } from "../downloadWav";
 import "./HistoryPanel.css";
 
 export interface HistoryItem {
@@ -12,7 +14,6 @@ export interface HistoryItem {
     length_adjust: number;
     inference_cfg_rate: number;
   };
-  wavB64: string;
 }
 
 interface Props {
@@ -26,15 +27,49 @@ function fmtTime(ts: number) {
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function download(wavB64: string, filename: string) {
-  const bytes = Uint8Array.from(atob(wavB64), (c) => c.charCodeAt(0));
-  const blob = new Blob([bytes], { type: "audio/wav" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
+function HistoryItemRow({ item }: { item: HistoryItem }) {
+  const [wav, setWav] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    loadWav(item.id).then((data) => {
+      setWav(data ?? null);
+      setLoading(false);
+    });
+  }, [item.id]);
+
+  return (
+    <div className="history-item">
+      <div className="history-meta">
+        <span className="history-time">{fmtTime(item.timestamp)}</span>
+        <span className="history-files" title={`${item.sourceName} → ${item.targetName}`}>
+          {item.sourceName} → {item.targetName}
+        </span>
+      </div>
+      <div className="history-controls">
+        {loading ? (
+          <span className="history-loading">加载中…</span>
+        ) : wav ? (
+          <>
+            <audio
+              controls
+              className="history-audio"
+              src={`data:audio/wav;base64,${wav}`}
+            />
+            <button
+              className="history-dl-btn"
+              onClick={() => downloadWav(wav, `singvc_${item.id}.wav`)}
+              title="下载"
+            >
+              ⬇
+            </button>
+          </>
+        ) : (
+          <span className="history-no-audio">音频数据已清除</span>
+        )}
+      </div>
+    </div>
+  );
 }
 
 export default function HistoryPanel({ items, onClear }: Props) {
@@ -60,32 +95,7 @@ export default function HistoryPanel({ items, onClear }: Props) {
       {expanded && (
         <div className="history-list">
           {items.map((item) => (
-            <div key={item.id} className="history-item">
-              <div className="history-meta">
-                <span className="history-time">{fmtTime(item.timestamp)}</span>
-                <span className="history-files" title={`${item.sourceName} → ${item.targetName}`}>
-                  {item.sourceName} → {item.targetName}
-                </span>
-                <span className="history-params">
-                  步数{item.params.diffusion_steps}
-                  {item.params.pitch_shift !== 0 && ` / 移调${item.params.pitch_shift > 0 ? "+" : ""}${item.params.pitch_shift}`}
-                </span>
-              </div>
-              <div className="history-controls">
-                <audio
-                  controls
-                  className="history-audio"
-                  src={`data:audio/wav;base64,${item.wavB64}`}
-                />
-                <button
-                  className="history-dl-btn"
-                  onClick={() => download(item.wavB64, `singvc_${item.id}.wav`)}
-                  title="下载"
-                >
-                  ⬇
-                </button>
-              </div>
-            </div>
+            <HistoryItemRow key={item.id} item={item} />
           ))}
         </div>
       )}
