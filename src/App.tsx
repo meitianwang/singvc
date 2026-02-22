@@ -1,10 +1,12 @@
 import { useEffect, useState, useRef, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import AudioUploadWithSep from "./components/AudioUploadWithSep";
 import ParamSliders, { type SepSettings } from "./components/ParamSliders";
 import AudioPlayer from "./components/AudioPlayer";
 import HistoryPanel, { HistoryItem } from "./components/HistoryPanel";
 import "./App.css";
+
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://127.0.0.1:18888";
+const API_KEY = import.meta.env.VITE_API_KEY || "";
 
 export interface Params {
   diffusion_steps: number;
@@ -19,7 +21,7 @@ type Status = "loading" | "ready" | "converting" | "done" | "error";
 
 /** Call /separate with single_stem=Vocals, return the extracted vocals as a File + base64 audio. */
 async function extractVocals(
-  file: File, model: string, postprocess: string, port: number
+  file: File, model: string, postprocess: string
 ): Promise<{ file: File; audioB64: string }> {
   const formData = new FormData();
   formData.append("audio_file", file);
@@ -28,9 +30,13 @@ async function extractVocals(
   formData.append("postprocess", postprocess);
   formData.append("single_stem", "Vocals");
 
-  const res = await fetch(`http://127.0.0.1:${port}/separate`, {
+  const headers: Record<string, string> = {};
+  if (API_KEY) headers["X-API-Key"] = API_KEY;
+
+  const res = await fetch(`${BACKEND_URL}/separate`, {
     method: "POST",
     body: formData,
+    headers,
   });
 
   const reader = res.body!.getReader();
@@ -78,7 +84,6 @@ async function extractVocals(
 }
 
 export default function App() {
-  const [serverPort, setServerPort] = useState<number>(18888);
   const [serverReady, setServerReady] = useState(false);
 
   // Audio files
@@ -124,24 +129,13 @@ export default function App() {
   const handleClearHistory = useCallback(() => setHistory([]), []);
 
   useEffect(() => {
-    invoke<number>("get_server_port")
-      .then(setServerPort)
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    const baseUrl = `http://127.0.0.1:${serverPort}`;
     pollRef.current = setInterval(async () => {
       try {
-        const res = await fetch(`${baseUrl}/status`);
+        const res = await fetch(`${BACKEND_URL}/status`);
         const data = await res.json();
         if (data.loaded) {
           setServerReady(true);
           setStatus("ready");
-          setParams((prev) => ({
-            ...prev,
-            use_fp16: data.device === "mps" ? false : prev.use_fp16,
-          }));
           clearInterval(pollRef.current!);
         } else if (data.error) {
           setStatus("error");
@@ -149,11 +143,11 @@ export default function App() {
           clearInterval(pollRef.current!);
         }
       } catch {
-        // server not up yet
+        // Modal 冷启动中，继续轮询
       }
-    }, 1500);
+    }, 3000);
     return () => clearInterval(pollRef.current!);
-  }, [serverPort]);
+  }, []);
 
   async function handleConvert() {
     if (!sourceFile || !targetFile || !serverReady) return;
@@ -173,7 +167,7 @@ export default function App() {
           setSourceVocalsB64(sourceSepCache.current.audioB64);
         } else {
           setProgressMsg("正在提取原始音轨人声…");
-          const result = await extractVocals(sourceFile, sep.model, sep.postprocess, serverPort);
+          const result = await extractVocals(sourceFile, sep.model, sep.postprocess);
           actualSource = result.file;
           setSourceVocalsB64(result.audioB64);
           sourceSepCache.current = { key: cacheKey, file: result.file, audioB64: result.audioB64 };
@@ -189,7 +183,7 @@ export default function App() {
           setTargetVocalsB64(targetSepCache.current.audioB64);
         } else {
           setProgressMsg("正在提取目标音色人声…");
-          const result = await extractVocals(targetFile, sep.model, sep.postprocess, serverPort);
+          const result = await extractVocals(targetFile, sep.model, sep.postprocess);
           actualTarget = result.file;
           setTargetVocalsB64(result.audioB64);
           targetSepCache.current = { key: cacheKey, file: result.file, audioB64: result.audioB64 };
@@ -210,9 +204,13 @@ export default function App() {
       formData.append("pitch_shift", String(params.pitch_shift));
       formData.append("use_fp16", String(params.use_fp16));
 
-      const res = await fetch(`http://127.0.0.1:${serverPort}/convert`, {
+      const headers: Record<string, string> = {};
+      if (API_KEY) headers["X-API-Key"] = API_KEY;
+
+      const res = await fetch(`${BACKEND_URL}/convert`, {
         method: "POST",
         body: formData,
+        headers,
       });
 
       const reader = res.body!.getReader();

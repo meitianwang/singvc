@@ -20,6 +20,7 @@ __pycache__/
 .python_server.pid
 node_modules/
 dist/
+.env
 
 # Rust / Tauri build artifacts
 src-tauri/target/
