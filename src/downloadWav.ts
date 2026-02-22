@@ -1,18 +1,11 @@
-import { save } from "@tauri-apps/plugin-dialog";
-import { writeFile } from "@tauri-apps/plugin-fs";
+import { invoke } from "@tauri-apps/api/core";
 
 export async function downloadWav(wavB64: string, defaultFilename: string) {
-  const bytes = Uint8Array.from(atob(wavB64), (c) => c.charCodeAt(0));
-
   try {
-    const filePath = await save({
-      defaultPath: defaultFilename,
-      filters: [{ name: "WAV Audio", extensions: ["wav"] }],
-    });
-    if (!filePath) return; // user cancelled
-    await writeFile(filePath, bytes);
+    await invoke("save_wav", { wavB64: wavB64, defaultName: defaultFilename });
   } catch {
     // Fallback for non-Tauri (browser dev mode)
+    const bytes = Uint8Array.from(atob(wavB64), (c) => c.charCodeAt(0));
     const blob = new Blob([bytes], { type: "audio/wav" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
